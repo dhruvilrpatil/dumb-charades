@@ -19,6 +19,16 @@ import {
   playCue,
   vibrate,
 } from './game/gameUtils'
+import {
+  loadPlayers,
+  addPlayer,
+  removePlayer,
+  updatePlayerScores,
+  resetPlayerScores,
+  getCachedPlayers,
+  saveCachedPlayers,
+  DEFAULT_PLAYERS,
+} from './lib/playerRepository'
 
 export default function App() {
   // Screen state: 'lobby' | 'turn' | 'results'
@@ -27,33 +37,23 @@ export default function App() {
   // Active round session ID for persistence
   const [activeRoundSessionId, setActiveRoundSessionId] = useState(null)
 
-  // Players list
-  const [players, setPlayers] = useState([
-    {
-      id: 'p1',
-      name: 'Raj',
-      color: getPlayerColor(0),
-      score: 0,
-      guessedCount: 0,
-      passCount: 0,
-    },
-    {
-      id: 'p2',
-      name: 'Simran',
-      color: getPlayerColor(1),
-      score: 0,
-      guessedCount: 0,
-      passCount: 0,
-    },
-    {
-      id: 'p3',
-      name: 'Kabir',
-      color: getPlayerColor(2),
-      score: 0,
-      guessedCount: 0,
-      passCount: 0,
-    },
-  ])
+  // Persistent Players list: initialized from cache for instant zero-flicker render
+  const [players, setPlayers] = useState(() => {
+    return getCachedPlayers() || DEFAULT_PLAYERS
+  })
+
+  // Hydrate players from Supabase DB on mount
+  useEffect(() => {
+    let isMounted = true
+    loadPlayers().then((dbPlayers) => {
+      if (isMounted && dbPlayers && dbPlayers.length > 0) {
+        setPlayers(dbPlayers)
+      }
+    })
+    return () => {
+      isMounted = false
+    }
+  }, [])
 
   // Game configuration
   const [settings, setSettings] = useState({
@@ -217,23 +217,27 @@ export default function App() {
     [settings]
   )
 
-  // Add a new player
-  const handleAddPlayer = (name) => {
-    const newPlayer = {
-      id: `p-${Date.now()}-${Math.random().toString(36).substring(2, 5)}`,
-      name,
-      color: getPlayerColor(players.length),
-      score: 0,
-      guessedCount: 0,
-      passCount: 0,
-    }
-    setPlayers((prev) => [...prev, newPlayer])
+  // Add a new player (persisted to Supabase DB and local storage)
+  const handleAddPlayer = async (name) => {
+    if (!name.trim()) return
+    const color = getPlayerColor(players.length)
+    const newPlayer = await addPlayer(name, color)
+    setPlayers((prev) => {
+      const updated = [...prev, newPlayer]
+      saveCachedPlayers(updated)
+      return updated
+    })
     vibrate([30])
   }
 
-  // Remove a player
-  const handleRemovePlayer = (id) => {
-    setPlayers((prev) => prev.filter((p) => p.id !== id))
+  // Remove a player (persisted to Supabase DB and local storage)
+  const handleRemovePlayer = async (id) => {
+    await removePlayer(id)
+    setPlayers((prev) => {
+      const updated = prev.filter((p) => p.id !== id)
+      saveCachedPlayers(updated)
+      return updated
+    })
     vibrate([30])
   }
 
@@ -391,6 +395,7 @@ export default function App() {
       }
     })
     setPlayers(updatedPlayers)
+    updatePlayerScores(updatedPlayers)
 
     // 3. Advance to next player with fresh movie
     const nextIdx = (playerIndex + 1) % updatedPlayers.length
@@ -457,6 +462,7 @@ export default function App() {
         : p
     )
     setPlayers(updatedPlayers)
+    updatePlayerScores(updatedPlayers)
 
     // 3. Next actor in rotation, BUT CURRENT MOVIE REMAINS UNCHANGED!
     const nextIdx = (playerIndex + 1) % updatedPlayers.length
@@ -538,12 +544,7 @@ export default function App() {
   // Start Next Round: Reset Tournament
   const handleResetTournament = () => {
     setIsNewRoundDialogOpen(false)
-    const resetPlayers = players.map((p) => ({
-      ...p,
-      score: 0,
-      guessedCount: 0,
-      passCount: 0,
-    }))
+    const resetPlayers = resetPlayerScores(players)
     setPlayers(resetPlayers)
     setRoundNumber(1)
     setTurnNumber(1)
@@ -711,14 +712,8 @@ export default function App() {
         isOpen={isAllTimeScoreboardModalOpen}
         onClose={() => closeModal('scoreboardModal', setIsAllTimeScoreboardModalOpen)}
         onReset={() => {
-          setPlayers((prev) =>
-            prev.map((p) => ({
-              ...p,
-              score: 0,
-              guessedCount: 0,
-              passCount: 0,
-            }))
-          )
+          const reset = resetPlayerScores(players)
+          setPlayers(reset)
           setTurnLogs([])
         }}
       />
